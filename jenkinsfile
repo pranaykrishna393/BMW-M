@@ -1,0 +1,144 @@
+1.	pipeline {
+2.	
+3.	            agent {
+4.	
+5.	              label 'master'
+6.	
+7.	            }
+8.	
+9.	            triggers {
+10.	
+11.	              pollSCM ''
+12.	
+13.	            }         
+14.	
+15.	            stages {        
+16.	
+17.	              stage('Build App') {
+18.	
+19.	                steps {
+20.	
+21.	                  slackSend color: "0000FF", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Started: <${env.BUILD_URL}|Open>"
+22.	
+23.	                  git branch: 'eap-7', url: 'http://172.16.238.15:3000/admin1/project_tasks'
+24.	
+25.	                  sh "mvn install -DskipTests=true"
+26.	
+27.	                  sh 'printenv'
+28.	
+29.	                }
+30.	
+31.	              }
+32.	
+33.	              stage('Test') {
+34.	
+35.	                steps {
+36.	
+37.	                  sh "mvn test"
+38.	
+39.	                  step([$class: 'JUnitResultArchiver', testResults: '**/target/surefire-reports/TEST-*.xml'])
+40.	
+41.	                }
+42.	
+43.	              }
+44.	
+45.	              stage('Code Analysis') {
+46.	
+47.	                steps {
+48.	
+49.	                  script {
+50.	
+51.	                    sh "mvn sonar:sonar -Dsonar.host.url=http://172.16.238.15:19000 -DskipTests=true"
+52.	
+53.	                  }
+54.	
+55.	                }
+56.	
+57.	              }
+58.	
+59.	              stage('Archive App') {
+60.	
+61.	                steps {
+62.	
+63.	                  nexusArtifactUploader artifacts: [[artifactId: 'tasks', classifier: 'SNAPSHOT', file: 'target/openshift-tasks.war', type: 'war']], credentialsId: 'Nexus', groupId: 'demo', nexusUrl: '172.16.238.15:8081', nexusVersion: 'nexus3', protocol: 'http', repository: 'project-demo', version: '1.0'
+64.	
+65.	                }
+66.	
+67.	              }
+68.	
+69.	              stage('Build Image') {
+70.	
+71.	                steps {
+72.	
+73.	                  sh "docker build --rm -t 172.16.238.15:5000/tasks-v1.0 ."
+74.	
+75.	                  sh "exit 1"
+76.	
+77.	                }
+78.	
+79.	              }
+80.	
+81.	              stage('Upload Image to Registry') {
+82.	
+83.	                steps {
+84.	
+85.	                  sh "docker push --disable-content-trust 172.16.238.15:5000/tasks-v1.0"
+86.	
+87.	                }
+88.	
+89.	              }
+90.	
+91.	            } 
+92.	
+93.	            post{
+94.	
+95.	              success{
+96.	
+97.	                  script {
+98.	
+99.	                    currentBuild.result = 'SUCCESS'
+100.	
+101.	                    } 
+102.	
+103.	                    logstashSend failBuild: true, maxLines: -1
+104.	
+105.	                    slackSend color: "#7CFC00", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Successful: <${env.BUILD_URL}|Open>"
+106.	
+107.	                  }
+108.	
+109.	              failure{
+110.	
+111.	                  script {
+112.	
+113.	                     currentBuild.result = 'FAILURE'
+114.	
+115.	                     def issue = [fields: [ project: [key: 'MAVDEMO'],
+116.	
+117.	                     summary: 'Build Failed ${env.JOB_NAME} -- ${env.BUILD_NUMBER}.',
+118.	
+119.	                     description: 'Build Failed ${env.JOB_NAME}.',
+120.	
+121.	                     issuetype: [name: 'Defect']]]
+122.	
+123.	                     def newIssue = jiraNewIssue issue: issue, site: 'Mavjira'
+124.	
+125.	                     echo newIssue.data.key
+126.	
+127.	                     }
+128.	
+129.	                     logstashSend failBuild: true, maxLines: -1
+130.	
+131.	                     slackSend color: "#FF0000", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Failed: <${env.BUILD_URL}|Open>"
+132.	
+133.	                     
+134.	
+135.	                  }
+136.	
+137.	                }
+138.	
+139.	          }
+140.	
+141.	         
+
+
+
