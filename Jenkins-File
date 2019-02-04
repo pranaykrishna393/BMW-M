@@ -1,0 +1,146 @@
+/* import shared library */
+@Library('jenkins-shared-library')_
+def FAILED_STAGE="none"
+def scanreport="http://172.16.238.15:19000/dashboard?id=org.mav%3Aselling-point-service"
+def testreport="http://172.16.238.2:9090/job/Mav-demo/Extent_20Report/"
+
+pipeline {
+            agent {
+              label 'master'
+            }
+            triggers {
+              pollSCM ''
+            }         
+            stages {        
+              stage('Build App') {
+                steps {
+                	
+                  //mattermostSend color: "0000FF", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Started: <${env.BUILD_URL}|Open>"
+                  slackSend color: "#0000FF", channel: "devops", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Started: <${env.BUILD_URL}|Open>"
+                  git branch: 'master', url: 'http://172.16.238.15:3000/admin1/sp.git'
+                  sh "mvn clean install -DskipTests=true"
+                  sh 'printenv'
+                  script{
+                        String commitHash =sh (script:"git rev-parse --short=10 HEAD",returnStdout: true)
+                        String commitmessage=sh (script:"git log --format=%B -n 1 ${commitHash}",returnStdout: true)                        
+                        String commitDate=sh (script:"git show -s --format=%ci -n 1 ${commitHash}",returnStdout: true)					
+                       
+    				    String[] str;
+                        str = commitmessage.split(':');
+                        String[] ids =str[0].split(',');
+                         def comment = "Committed on Date: "+commitDate+ "\nCommit Id: "+commitHash+" \nCommit Message: "+str[1]
+                        for (String id : ids){         
+                          	jiraAddComment site: 'Mavjira', idOrKey: id, comment: comment
+    					} 
+				     }
+                }
+              }
+              stage('Code Analysis') {
+                steps {
+                	script{
+                  	FAILED_STAGE="Code Analysis"
+                  	}
+                  withSonarQubeEnv('mavsonar') {
+                    sh "mvn sonar:sonar -Dsonar.host.url=http://172.16.238.15:19000 -DskipTests=true"
+                  }
+                  timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: true
+                  }
+                  
+                }
+              }
+             
+              stage('Archive App') {
+                steps {
+                  nexusArtifactUploader artifacts: [[artifactId: 'selling-point-service', classifier: 'RELEASE', file: 'target/selling-point-service.war', type: 'war']], credentialsId: 'Nexus', groupId: 'com.mav', nexusUrl: '172.16.238.15:8081', nexusVersion: 'nexus3', protocol: 'http', repository: 'selling-point', version: '1.0'
+                }
+              }
+              stage('Build Image') {
+                steps {
+                  sh "docker build --rm -t 172.16.238.15:5000/selling-point-service-v1.0 ."
+                }
+              }
+              stage('Upload Image to Registry') {
+                steps {
+                  sh "docker push --disable-content-trust 172.16.238.15:5000/selling-point-service-v1.0"
+                }
+              }
+              stage('Deploy Build') {
+                steps {
+                  sh "sh compose.sh"
+                }
+              }
+              stage('Run Test') {
+                steps {
+                	script{
+                  	FAILED_STAGE="Run Test"
+                  	}
+                  sh "mvn surefire-report:report"
+                  publishHTML target: [
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: '',
+                    reportFiles: '**/Report/index.html',
+                    reportName: 'Extent Report',
+                    includes: '**/*'
+                  ]
+                }
+              }
+              stage('OWASP Dependency-Check ') {
+                steps {
+                  dependencyCheckAnalyzer datadir: '', suppressionFile: '', hintsFile: '', zipExtensions : '', includeCsvReports: false, includeHtmlReports: false, includeVulnReports: false, includeJsonReports: false, isAutoupdateDisabled: false, outdir: '', scanpath: '**/selling-point-service.war', skipOnScmChange: false, skipOnUpstreamChange: false
+                  dependencyCheckPublisher canComputeNew: false, defaultEncoding: '', healthy: '', pattern: '**/dependency-check-report.xml', unHealthy: ''
+                }
+              }
+              
+            } 
+            post{
+              success{
+                  script {
+                    currentBuild.result = 'SUCCESS'
+                    }
+                    script{
+    				    String commitHash =sh (script:"git rev-parse --short=10 HEAD",returnStdout: true)
+    					String commitmessage=sh (script:"git log --format=%B -n 1 ${commitHash}",returnStdout: true)
+    				    String[] str;
+                        str = commitmessage.split(':');
+                        String[] ids =str[0].split(',');
+                        for (String id : ids){         
+                          	jiraAddComment site: 'Mavjira', idOrKey: id, comment:"Build Successful: Job Name - '${env.JOB_NAME}' and Build number - '${env.BUILD_NUMBER}'(${env.BUILD_URL})"
+    					} 
+				     }
+                                          
+                    logstashSend failBuild: true, maxLines: -1                    
+                    slackSend color: "#7CFC00", channel: "devops", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Successful: <${env.BUILD_URL}|Jenkins>"
+                    slackSend color: "#7CFC00", channel: "qib-qualityleads", message: "SellingPoint - Sonar scan Successful <${scanreport}|Scan Report>  <${env.BUILD_URL}|Jenkins>"             
+                    slackSend color: "#7CFC00", channel: "qib-testleads", message: "SellingPoint - Automation test Successful <${testreport}|Test Report>  <${env.BUILD_URL}|Jenkins>"
+                    //mattermostSend color: "#7CFC00", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Successful: <${env.BUILD_URL}|Jenkins>"
+                  }
+              failure{
+                  script {
+                     currentBuild.result = 'FAILURE'
+                     String commitHash =sh (script:"git rev-parse --short=10 HEAD",returnStdout: true)
+                     def issue = [fields: [ project: [key: 'SPD'],
+                     summary: "Build Failed in job: ${env.JOB_NAME}",
+                     description: "Build Failed for the commit id: '${commitHash}' in Job: '${env.JOB_NAME}' for the build number '${env.BUILD_NUMBER}' Build URL '${env.BUILD_URL}'",
+                     issuetype: [name: 'Bug']]]
+                     def newIssue = jiraNewIssue issue: issue, site: 'Mavjira'
+                     echo newIssue.data.key
+                     }
+                  
+                     logstashSend failBuild: true, maxLines: -1
+                     //mattermostSend color: "#FF0000", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Failed: <${env.BUILD_URL}|Open>"
+                     script{
+                        if("${FAILED_STAGE}"=="Code Analysis"){
+                          slackSend color: "#FF0000", channel: "qib-qualityleads", message: "SellingPoint -Sonar scan failed <${scanreport}|Scan Report>  <${env.BUILD_URL}|Jenkins>"
+                        }
+                        if("${FAILED_STAGE}"=="Run Test"){
+                          slackSend color: "#FF0000", channel: "qib-testleads", message: "SellingPoint -Automation test failed <${testreport}|Test Report>  <${env.BUILD_URL}|Jenkins>"
+                        }
+                      }
+                     slackSend color: "#FF0000", channel: "devops", message: "Build ${env.JOB_NAME} - ${env.BUILD_NUMBER} Failed: <${env.BUILD_URL}|Open>"
+                 
+                  }
+                }
+          }
