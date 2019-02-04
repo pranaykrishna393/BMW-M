@@ -1,0 +1,68 @@
+version: '2'
+services:
+  jenkins:
+    build: ./jenkins
+    ports:
+      - 9090:8080
+    volumes:            
+      - /opt/docker/jenkins:/var/jenkins_home
+    depends_on:
+      - sonar
+      - nexus
+      - hub
+  sonar:
+    build: ./sonar
+    ports:
+      - 9000:9000
+    links:
+      - db:mysql
+    volumes:     
+      - /opt/docker/sonarqube/app/data:/opt/sonarqube/data
+    environment:
+      - SONAR_JDBC_URL=jdbc:mysql://mysql:3306/sonarqube?useUnicode=true&characterEncoding=utf8&rewriteBatchedStatements=true
+      - SONAR_DB_USERNAME=sonar
+      - SONAR_DB_PASSWORD=sonar      
+  db:
+    build: ./mysql
+    hostname: mysql
+    ports:
+      - 3306:3306
+    volumes:
+      - /opt/docker/sonarqube/mysql:/var/lib/mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=password
+      - MYSQL_USER=sonar
+      - MYSQL_PASSWORD=sonar
+      - MYSQL_DATABASE=sonar
+  nexus:
+    build: ./nexus
+    ports:
+      - 8081:8081
+    volumes:
+      - /opt/docker/nexus:/sonatype-work  
+  hub:
+    image: "selenium/hub:2.53.0"
+    ports:
+      - 4444:4444
+  chrome:
+    image: "selenium/node-chrome:2.53.0"
+    depends_on:
+      - hub
+    environment:
+      HUB_PORT_4444_TCP_ADDR: hub
+  firefox:
+    image: "selenium/node-firefox:2.53.0"
+    depends_on:
+      - hub
+    environment:
+      HUB_PORT_4444_TCP_ADDR: hub
+  tomcat:
+    build: ./tomcat    
+    ports:
+      - 8080:8080
+    links:
+      - db:mysql
+    environment:
+      - SP_JDBC_URL=jdbc:mysql://mysql:3306/sellingpoint-db?useUnicode=true&characterEncoding=utf8&rewriteBatchedStatements=true
+      - SP_DB_USERNAME=root
+      - SP_DB_PASSWORD=password
